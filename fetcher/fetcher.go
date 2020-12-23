@@ -1,15 +1,14 @@
-package crawler
+package fetcher
 
 import (
 	"context"
 	"errors"
-	"log"
 	"net/http"
 	"net/url"
 	"sync"
 	"time"
 
-	"github.com/cockroachdb/pebble"
+	log "github.com/sirupsen/logrus"
 	"golang.org/x/time/rate"
 )
 
@@ -17,8 +16,18 @@ var (
 	ErrAlreadyCrawledRecently = errors.New("error: already crawled recently")
 )
 
+// Interface that defines what can be `fetched`. The url to be fetched is
+// returned by `Url()` method. Before the actual fetching is performed, the
+// `Validate()` method is called. Fetching only proceeds if that method returns
+// a `nil` error. Finally, `HandleResponse()` is the callback when crawling is
+// successful.
+type Fetchable interface {
+	Url() string
+	Validate() error
+	HandleResponse(*http.Response) error
+}
+
 type Fetcher struct {
-	store           *Store
 	limitDuration   time.Duration
 	timeoutDuration time.Duration
 	minInterval     time.Duration
@@ -26,11 +35,10 @@ type Fetcher struct {
 	mu              sync.Mutex
 }
 
-func NewFetcher(store *Store, timeoutDuration time.Duration, limitDuration time.Duration, minInterval time.Duration) (*Fetcher, error) {
+func NewFetcher(timeoutDuration time.Duration, limitDuration time.Duration, minInterval time.Duration) (*Fetcher, error) {
 	m := make(map[string]*rate.Limiter)
 	return &Fetcher{
 		domainLimiter:   m,
-		store:           store,
 		limitDuration:   limitDuration,
 		timeoutDuration: timeoutDuration,
 		minInterval:     minInterval,
@@ -48,22 +56,14 @@ func (f *Fetcher) getDomainLimiter(domain string) *rate.Limiter {
 	return limiter
 }
 
-func (f *Fetcher) Fetch(urlstr string) error {
-	u, err := url.Parse(urlstr)
+func (f *Fetcher) Fetch(furl Fetchable) error {
+	err := furl.Validate()
 	if err != nil {
 		return err
 	}
-	cu, closer, err := f.store.Get(urlstr)
-	if err != nil && err != pebble.ErrNotFound {
+	u, err := url.Parse(furl.Url())
+	if err != nil {
 		return err
-	}
-	if err == nil {
-		defer closer.Close()
-		crawlTime := time.Unix(cu.CrawlTs(), 0)
-		minTime := crawlTime.Add(f.minInterval)
-		if !time.Now().After(minTime) {
-			return ErrAlreadyCrawledRecently
-		}
 	}
 	limiter := f.getDomainLimiter(u.Hostname())
 	ctx, cancel := context.WithTimeout(context.Background(), f.timeoutDuration)
@@ -72,17 +72,16 @@ func (f *Fetcher) Fetch(urlstr string) error {
 	if err != nil {
 		return err
 	}
-	resp, err := http.Get(urlstr)
+	resp, err := http.Get(furl.Url())
 	if err != nil {
 		return err
 	}
-	return f.store.Save(urlstr, resp)
+	return furl.HandleResponse(resp)
 }
 
-func (f *Fetcher) FetchConcurrentlyWait(urlChannel <-chan string, concurrency int) {
+func (f *Fetcher) FetchConcurrentlyWait(urlChannel <-chan Fetchable, concurrency int) {
 	var wg sync.WaitGroup
 	wg.Add(concurrency)
-
 	for i := 0; i < concurrency; i++ {
 		go func() {
 			defer wg.Done()
@@ -94,11 +93,10 @@ func (f *Fetcher) FetchConcurrentlyWait(urlChannel <-chan string, concurrency in
 			}
 		}()
 	}
-
 	wg.Wait()
 }
 
-func (f *Fetcher) FetchConcurrently(urlChannel <-chan string, concurrency int) chan bool {
+func (f *Fetcher) FetchConcurrently(urlChannel <-chan Fetchable, concurrency int) chan bool {
 	c := make(chan bool, 1)
 	go func() {
 		f.FetchConcurrentlyWait(urlChannel, concurrency)

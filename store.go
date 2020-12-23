@@ -82,3 +82,41 @@ func (s *Store) LastCrawlTs(url string) (int64, error) {
 	defer closer.Close()
 	return cu.CrawlTs(), nil
 }
+
+type StoringFetchable struct {
+	urlStr      string
+	store       *Store
+	minInterval time.Duration
+}
+
+func NewStoringFetchable(urlStr string, store *Store, minInterval time.Duration) *StoringFetchable {
+	return &StoringFetchable{
+		urlStr:      urlStr,
+		store:       store,
+		minInterval: minInterval,
+	}
+}
+
+func (s *StoringFetchable) Url() string {
+	return s.urlStr
+}
+
+func (s *StoringFetchable) Validate() error {
+	cu, closer, err := s.store.Get(s.Url())
+	if err != nil && err != pebble.ErrNotFound {
+		return err
+	}
+	if err == nil {
+		defer closer.Close()
+		crawlTime := time.Unix(cu.CrawlTs(), 0)
+		minTime := crawlTime.Add(s.minInterval)
+		if !time.Now().After(minTime) {
+			return ErrAlreadyCrawledRecently
+		}
+	}
+	return nil
+}
+
+func (s *StoringFetchable) HandleResponse(resp *http.Response) error {
+	return s.store.Save(s.Url(), resp)
+}
