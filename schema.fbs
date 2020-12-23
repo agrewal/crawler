@@ -1,0 +1,9 @@
+namespace crawled_url;
+
+table CrawledUrl {
+	crawl_ts: int64;
+	status_code: int;
+	body: string;
+}
+
+root_type CrawledUrl;
