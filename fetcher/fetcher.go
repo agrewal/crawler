@@ -25,19 +25,17 @@ type Fetchable interface {
 type Fetcher struct {
 	limitDuration   time.Duration
 	timeoutDuration time.Duration
-	minInterval     time.Duration
 	domainLimiter   map[string]*rate.Limiter
 	mu              sync.Mutex
 }
 
-func NewFetcher(timeoutDuration time.Duration, limitDuration time.Duration, minInterval time.Duration) (*Fetcher, error) {
+func NewFetcher(timeoutDuration time.Duration, limitDuration time.Duration) *Fetcher {
 	m := make(map[string]*rate.Limiter)
 	return &Fetcher{
 		domainLimiter:   m,
 		limitDuration:   limitDuration,
 		timeoutDuration: timeoutDuration,
-		minInterval:     minInterval,
-	}, nil
+	}
 }
 
 func (f *Fetcher) getDomainLimiter(domain string) *rate.Limiter {
