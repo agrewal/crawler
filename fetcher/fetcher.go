@@ -2,7 +2,6 @@ package fetcher
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"net/url"
 	"sync"
@@ -10,10 +9,6 @@ import (
 
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/time/rate"
-)
-
-var (
-	ErrAlreadyCrawledRecently = errors.New("error: already crawled recently")
 )
 
 // Interface that defines what can be `fetched`. The url to be fetched is
@@ -57,10 +52,12 @@ func (f *Fetcher) getDomainLimiter(domain string) *rate.Limiter {
 }
 
 func (f *Fetcher) Fetch(furl Fetchable) error {
+	log.WithField("url", furl.Url()).Debug("Starting fetch")
 	err := furl.Validate()
 	if err != nil {
 		return err
 	}
+	log.WithField("url", furl.Url()).Debug("Validation passed")
 	u, err := url.Parse(furl.Url())
 	if err != nil {
 		return err
@@ -68,14 +65,17 @@ func (f *Fetcher) Fetch(furl Fetchable) error {
 	limiter := f.getDomainLimiter(u.Hostname())
 	ctx, cancel := context.WithTimeout(context.Background(), f.timeoutDuration)
 	defer cancel()
+	log.WithField("url", furl.Url()).Debug("Waiting for rate limiter")
 	err = limiter.Wait(ctx)
 	if err != nil {
 		return err
 	}
+	log.WithField("url", furl.Url()).Debug("Beginning http Get")
 	resp, err := http.Get(furl.Url())
 	if err != nil {
 		return err
 	}
+	log.WithField("url", furl.Url()).Debug("Handling Response")
 	return furl.HandleResponse(resp)
 }
 
@@ -88,7 +88,7 @@ func (f *Fetcher) FetchConcurrentlyWait(urlChannel <-chan Fetchable, concurrency
 			for u := range urlChannel {
 				err := f.Fetch(u)
 				if err != nil {
-					log.Printf("Error while fetching url %q, %s", u, err)
+					log.WithField("url", u.Url()).WithError(err).Error("Did not fetch")
 				}
 			}
 		}()

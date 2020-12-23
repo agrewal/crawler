@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"flag"
 	"fmt"
@@ -9,7 +8,13 @@ import (
 	"time"
 
 	"github.com/agrewal/crawler"
+	"github.com/agrewal/crawler/fetcher"
+	log "github.com/sirupsen/logrus"
 )
+
+func init() {
+	log.SetLevel(log.DebugLevel)
+}
 
 func main() {
 	fetchCmd := flag.NewFlagSet("fetch", flag.ExitOnError)
@@ -35,14 +40,13 @@ func main() {
 			panic(err)
 		}
 		defer store.Close()
-		fetcher, err := crawler.NewFetcher(
-			store,
+		fer, err := fetcher.NewFetcher(
 			10*time.Minute,
 			15*time.Second,
 			3*time.Hour,
 		)
-		urlChan := crawler.ScannerToChannel(context.Background(), bufio.NewScanner(os.Stdin), 1)
-		fetcher.FetchConcurrentlyWait(urlChan, *conc)
+		urlChan := crawler.ReaderToStoringFetchable(context.Background(), os.Stdin, 1, store, 1*time.Hour)
+		fer.FetchConcurrentlyWait(urlChan, *conc)
 
 	case "get":
 		getCmd.Parse(os.Args[2:])

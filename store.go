@@ -1,6 +1,9 @@
 package crawler
 
 import (
+	"bufio"
+	"context"
+	"errors"
 	"io"
 	"io/ioutil"
 	"net/http"
@@ -8,6 +11,7 @@ import (
 	"time"
 
 	"github.com/agrewal/crawler/crawled_url"
+	"github.com/agrewal/crawler/fetcher"
 	"github.com/cockroachdb/pebble"
 	flatbuffers "github.com/google/flatbuffers/go"
 )
@@ -17,6 +21,10 @@ var builderPool = sync.Pool{
 		return flatbuffers.NewBuilder(0)
 	},
 }
+
+var (
+	ErrAlreadyCrawledRecently = errors.New("error: already crawled recently")
+)
 
 type Store struct {
 	db *pebble.DB
@@ -119,4 +127,24 @@ func (s *StoringFetchable) Validate() error {
 
 func (s *StoringFetchable) HandleResponse(resp *http.Response) error {
 	return s.store.Save(s.Url(), resp)
+}
+
+func ReaderToStoringFetchable(ctx context.Context, reader io.Reader, channelBufferSize int, store *Store, minInterval time.Duration) <-chan fetcher.Fetchable {
+	strChannel := make(chan fetcher.Fetchable, channelBufferSize)
+	makeFetchable := func(u string) *StoringFetchable {
+		return NewStoringFetchable(u, store, minInterval)
+	}
+	go func() {
+		scanner := bufio.NewScanner(reader)
+		defer close(strChannel)
+		for scanner.Scan() {
+			select {
+			case <-ctx.Done():
+				return
+			case strChannel <- makeFetchable(scanner.Text()):
+				continue
+			}
+		}
+	}()
+	return strChannel
 }
