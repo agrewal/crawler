@@ -78,10 +78,12 @@ func (sbf *StoreBackedFetcher) Fetch(furl Fetchable) error {
 	})
 	l.Debug("Fetching from the store")
 	cu, closer, err := sbf.store.Get(u)
-	if err != nil {
+	if closer != nil {
+		defer closer.Close()
+	}
+	if err != nil && err != pebble.ErrNotFound {
 		return err
 	}
-	defer closer.Close()
 	if cu != nil {
 		l.Debug("Found in storage")
 		crawlTime := time.Unix(cu.CrawlTs(), 0)
