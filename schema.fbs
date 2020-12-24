@@ -2,7 +2,7 @@ namespace crawled_url;
 
 table CrawledUrl {
 	crawl_ts: int64;
-	status_code: int;
+	crawl_id: string;
 	body: string;
 }
 

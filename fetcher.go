@@ -2,6 +2,7 @@ package fetcher
 
 import (
 	"context"
+	"io/ioutil"
 	"net/http"
 	"sync"
 	"time"
@@ -10,26 +11,50 @@ import (
 	"golang.org/x/time/rate"
 )
 
-// Interface that defines what can be `fetched`. The request to be fetched is
-// returned by `Request()` method. Before the actual fetching is performed, the
-// `Validate()` method is called. Fetching only proceeds if that method returns
-// a `nil` error. Finally, `HandleResponse()` is the callback when crawling is
-// successful.
+// Interface that defines what can be `fetched`.
 type Fetchable interface {
 	// Unique identifier for this fetchable item. This is useful in logging.
 	Id() string
 
+	// Url that this is trying to fetch. It can also be determined from
+	// Request. Keeping it here to avoid repetition in the codebase.
+	Url() string
+
 	// Build a request.
 	Request() (*http.Request, error)
 
-	// Validate the request before doing the actual fetch. This is useful for
-	// example, to check if the store has already fetched the data recently.
-	Validate() error
+	// Callback to handle the http response body corresponding to the request.
+	// This can be used for example, to store data into the store, or to parse
+	// the results in some way
+	HandleResponseBody([]byte) error
+}
 
-	// Callback to handle the http response corresponding to the request. This
-	// can be used for example, to store data into the store, or to parse the
-	// results in some way
-	HandleResponse(*http.Response) error
+// Wrapping a `string` (holding a url) into a `Fetchable`
+type StringFetchable string
+
+// Return the string as the Id
+func (sf StringFetchable) Id() string {
+	return string(sf)
+}
+
+// Return the string as the Url
+func (sf StringFetchable) Url() string {
+	return string(sf)
+}
+
+// Returns a GET request to the Url
+func (sf StringFetchable) Request() (*http.Request, error) {
+	return http.NewRequest("GET", sf.Url(), nil)
+}
+
+// Always returns nil.
+func (sf StringFetchable) HandleResponseBody(body []byte) error {
+	return nil
+}
+
+// Interface
+type FetchI interface {
+	Fetch(Fetchable) error
 }
 
 // Fetcher struct used to download
@@ -138,16 +163,10 @@ func (f *Fetcher) Fetch(furl Fetchable) error {
 		"id":  furl.Id(),
 		"url": u,
 	})
-	l.Debug("Starting fetch")
-	err = furl.Validate()
-	if err != nil {
-		return err
-	}
-	l.Debug("Validation passed")
+	l.Debug("Waiting for rate limiter")
 	limiter := f.getDomainLimiter(req.URL.Hostname())
 	ctx, cancel := context.WithTimeout(context.Background(), f.options.timeoutDuration)
 	defer cancel()
-	l.Debug("Waiting for rate limiter")
 	err = limiter.Wait(ctx)
 	if err != nil {
 		return err
@@ -157,8 +176,12 @@ func (f *Fetcher) Fetch(furl Fetchable) error {
 	if err != nil {
 		return err
 	}
-	l.Debug("Handling Response")
-	return furl.HandleResponse(resp)
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	l.Debugf("Finished reading body (len: %d bytes)", len(body))
+	return furl.HandleResponseBody(body)
 }
 
 // Starts `concurrency` goroutines to fetch content from `urlChannel` in
@@ -167,7 +190,7 @@ func (f *Fetcher) Fetch(furl Fetchable) error {
 //
 // Note: Please ensure you call `close()` on the `urlChannel`, or else this
 // method will never return
-func (f *Fetcher) FetchConcurrentlyWait(urlChannel <-chan Fetchable, concurrency int) {
+func FetchConcurrentlyWait(f FetchI, urlChannel <-chan Fetchable, concurrency int) {
 	var wg sync.WaitGroup
 	wg.Add(concurrency)
 	for i := 0; i < concurrency; i++ {

@@ -38,16 +38,12 @@ func (rcv *CrawledUrl) MutateCrawlTs(n int64) bool {
 	return rcv._tab.MutateInt64Slot(4, n)
 }
 
-func (rcv *CrawledUrl) StatusCode() int32 {
+func (rcv *CrawledUrl) CrawlId() []byte {
 	o := flatbuffers.UOffsetT(rcv._tab.Offset(6))
 	if o != 0 {
-		return rcv._tab.GetInt32(o + rcv._tab.Pos)
+		return rcv._tab.ByteVector(o + rcv._tab.Pos)
 	}
-	return 0
-}
-
-func (rcv *CrawledUrl) MutateStatusCode(n int32) bool {
-	return rcv._tab.MutateInt32Slot(6, n)
+	return nil
 }
 
 func (rcv *CrawledUrl) Body() []byte {
@@ -64,8 +60,8 @@ func CrawledUrlStart(builder *flatbuffers.Builder) {
 func CrawledUrlAddCrawlTs(builder *flatbuffers.Builder, crawlTs int64) {
 	builder.PrependInt64Slot(0, crawlTs, 0)
 }
-func CrawledUrlAddStatusCode(builder *flatbuffers.Builder, statusCode int32) {
-	builder.PrependInt32Slot(1, statusCode, 0)
+func CrawledUrlAddCrawlId(builder *flatbuffers.Builder, crawlId flatbuffers.UOffsetT) {
+	builder.PrependUOffsetTSlot(1, flatbuffers.UOffsetT(crawlId), 0)
 }
 func CrawledUrlAddBody(builder *flatbuffers.Builder, body flatbuffers.UOffsetT) {
 	builder.PrependUOffsetTSlot(2, flatbuffers.UOffsetT(body), 0)

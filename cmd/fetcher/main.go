@@ -7,8 +7,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/agrewal/crawler"
-	"github.com/agrewal/crawler/fetcher"
+	"github.com/agrewal/fetcher"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -35,14 +34,14 @@ func main() {
 			fmt.Println("Must specify store directory")
 			os.Exit(1)
 		}
-		store, err := crawler.NewStore(*storeDir)
+		store, err := fetcher.NewPebbleStore(*storeDir)
 		if err != nil {
 			panic(err)
 		}
 		defer store.Close()
-		fer := fetcher.NewFetcher()
-		urlChan := crawler.ReaderToStoringFetchable(context.Background(), os.Stdin, 1, store, 1*time.Hour)
-		fer.FetchConcurrentlyWait(urlChan, *conc)
+		fer := fetcher.NewStoreBackedFetcher(store, fetcher.NewFetcher(), 1*time.Minute)
+		urlChan := fetcher.ReaderToStringFetchable(context.Background(), os.Stdin, 1)
+		fetcher.FetchConcurrentlyWait(fer, urlChan, *conc)
 
 	case "get":
 		getCmd.Parse(os.Args[2:])
@@ -50,7 +49,7 @@ func main() {
 			fmt.Println("Must specify store directory")
 			os.Exit(1)
 		}
-		store, err := crawler.NewStore(*getStoreDir)
+		store, err := fetcher.NewPebbleStore(*getStoreDir)
 		if err != nil {
 			panic(err)
 		}
@@ -64,7 +63,6 @@ func main() {
 			panic(err)
 		}
 		defer closer.Close()
-		fmt.Printf("Status Code: %d\n", cu.StatusCode())
 		fmt.Printf("Crawl time: %s\n", time.Unix(cu.CrawlTs(), 0))
 		fmt.Printf("Body size: %d bytes\n", len(cu.Body()))
 

@@ -1,20 +1,14 @@
-package crawler
+package fetcher
 
 import (
-	"bufio"
-	"context"
-	"errors"
 	"io"
-	"io/ioutil"
-	"net/http"
 	"sync"
 	"time"
 
-	"github.com/agrewal/crawler/crawled_url"
-	"github.com/agrewal/crawler/fetcher"
+	"github.com/agrewal/fetcher/crawled_url"
 	"github.com/cockroachdb/pebble"
 	flatbuffers "github.com/google/flatbuffers/go"
-	"github.com/segmentio/ksuid"
+	log "github.com/sirupsen/logrus"
 )
 
 var builderPool = sync.Pool{
@@ -23,47 +17,102 @@ var builderPool = sync.Pool{
 	},
 }
 
-var (
-	ErrAlreadyCrawledRecently = errors.New("error: already crawled recently")
-)
-
-type Store struct {
-	db *pebble.DB
+type Store interface {
+	Get(key string) (*crawled_url.CrawledUrl, io.Closer, error)
+	Set(key string, body []byte) error
 }
 
-func NewStore(dirname string) (*Store, error) {
-	db, err := pebble.Open(dirname, nil)
-	if err != nil {
-		return nil, err
-	}
-	return &Store{db}, nil
+type StoringFetchable struct {
+	Fetchable
+	store Store
 }
 
-func (s *Store) Close() {
-	s.db.Close()
+func NewStoringFetchable(fetchable Fetchable, store Store) *StoringFetchable {
+	return &StoringFetchable{fetchable, store}
 }
 
-func (s *Store) Save(url string, resp *http.Response) error {
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return err
-	}
+func (sf *StoringFetchable) HandleResponseBody(body []byte) error {
 	builder := builderPool.Get().(*flatbuffers.Builder)
+	defer builderPool.Put(builder)
 	builder.Reset()
 	body_offset := builder.CreateByteString(body)
+	id_offset := builder.CreateString(sf.Id())
 	crawled_url.CrawledUrlStart(builder)
 	crawled_url.CrawledUrlAddCrawlTs(builder, time.Now().Unix())
-	crawled_url.CrawledUrlAddStatusCode(builder, int32(resp.StatusCode))
+	crawled_url.CrawledUrlAddCrawlId(builder, id_offset)
 	crawled_url.CrawledUrlAddBody(builder, body_offset)
 	cu := crawled_url.CrawledUrlEnd(builder)
 	builder.Finish(cu)
 	buf := builder.FinishedBytes()
-	builderPool.Put(builder)
-	return s.db.Set([]byte(url), buf, nil)
+	err := sf.store.Set(sf.Url(), buf)
+	if err != nil {
+		return err
+	}
+	return sf.Fetchable.HandleResponseBody(body)
 }
 
-func (s *Store) Get(url string) (*crawled_url.CrawledUrl, io.Closer, error) {
-	data, closer, err := s.db.Get([]byte(url))
+type StoreBackedFetcher struct {
+	store       Store
+	fetcher     *Fetcher
+	minInterval time.Duration
+}
+
+func NewStoreBackedFetcher(store Store, fetcher *Fetcher, minInterval time.Duration) *StoreBackedFetcher {
+	return &StoreBackedFetcher{
+		store,
+		fetcher,
+		minInterval,
+	}
+}
+
+func (sbf *StoreBackedFetcher) Fetch(furl Fetchable) error {
+	log.WithField("id", furl.Id()).Debug("Getting http request")
+	req, err := furl.Request()
+	if err != nil {
+		return err
+	}
+	u := req.URL.String()
+	l := log.WithFields(log.Fields{
+		"id":  furl.Id(),
+		"url": u,
+	})
+	l.Debug("Fetching from the store")
+	cu, closer, err := sbf.store.Get(u)
+	if err != nil {
+		return err
+	}
+	defer closer.Close()
+	if cu != nil {
+		l.Debug("Found in storage")
+		crawlTime := time.Unix(cu.CrawlTs(), 0)
+		minTime := crawlTime.Add(sbf.minInterval)
+		if !time.Now().After(minTime) {
+			l.Debug("minInterval has not elapsed, returning crawled data from store")
+			return furl.HandleResponseBody(cu.Body())
+		}
+	}
+	l.Debug("Calling underlying fetcher")
+	return sbf.fetcher.Fetch(NewStoringFetchable(furl, sbf.store))
+}
+
+type PebbleStore struct {
+	db *pebble.DB
+}
+
+func NewPebbleStore(dirname string) (*PebbleStore, error) {
+	db, err := pebble.Open(dirname, nil)
+	if err != nil {
+		return nil, err
+	}
+	return &PebbleStore{db}, nil
+}
+
+func (s *PebbleStore) Close() {
+	s.db.Close()
+}
+
+func (s *PebbleStore) Get(key string) (*crawled_url.CrawledUrl, io.Closer, error) {
+	data, closer, err := s.db.Get([]byte(key))
 	if err != nil {
 		return nil, closer, err
 	}
@@ -71,87 +120,6 @@ func (s *Store) Get(url string) (*crawled_url.CrawledUrl, io.Closer, error) {
 	return cu, closer, nil
 }
 
-func (s *Store) Exists(url string) (bool, error) {
-	_, closer, err := s.db.Get([]byte(url))
-	if err == pebble.ErrNotFound {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	defer closer.Close()
-	return true, nil
-}
-
-func (s *Store) LastCrawlTs(url string) (int64, error) {
-	cu, closer, err := s.Get(url)
-	if err != nil {
-		return 0, err
-	}
-	defer closer.Close()
-	return cu.CrawlTs(), nil
-}
-
-type StoringFetchable struct {
-	urlStr      string
-	store       *Store
-	minInterval time.Duration
-	id          string
-}
-
-func NewStoringFetchable(urlStr string, store *Store, minInterval time.Duration) *StoringFetchable {
-	return &StoringFetchable{
-		urlStr:      urlStr,
-		store:       store,
-		minInterval: minInterval,
-		id:          ksuid.New().String(),
-	}
-}
-
-func (s *StoringFetchable) Id() string {
-	return s.id
-}
-
-func (s *StoringFetchable) Request() (*http.Request, error) {
-	return http.NewRequest("GET", s.urlStr, nil)
-}
-
-func (s *StoringFetchable) Validate() error {
-	cu, closer, err := s.store.Get(s.urlStr)
-	if err != nil && err != pebble.ErrNotFound {
-		return err
-	}
-	if err == nil {
-		defer closer.Close()
-		crawlTime := time.Unix(cu.CrawlTs(), 0)
-		minTime := crawlTime.Add(s.minInterval)
-		if !time.Now().After(minTime) {
-			return ErrAlreadyCrawledRecently
-		}
-	}
-	return nil
-}
-
-func (s *StoringFetchable) HandleResponse(resp *http.Response) error {
-	return s.store.Save(s.urlStr, resp)
-}
-
-func ReaderToStoringFetchable(ctx context.Context, reader io.Reader, channelBufferSize int, store *Store, minInterval time.Duration) <-chan fetcher.Fetchable {
-	strChannel := make(chan fetcher.Fetchable, channelBufferSize)
-	makeFetchable := func(u string) *StoringFetchable {
-		return NewStoringFetchable(u, store, minInterval)
-	}
-	go func() {
-		scanner := bufio.NewScanner(reader)
-		defer close(strChannel)
-		for scanner.Scan() {
-			select {
-			case <-ctx.Done():
-				return
-			case strChannel <- makeFetchable(scanner.Text()):
-				continue
-			}
-		}
-	}()
-	return strChannel
+func (s *PebbleStore) Set(key string, body []byte) error {
+	return s.db.Set([]byte(key), body, nil)
 }
