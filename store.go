@@ -14,6 +14,7 @@ import (
 	"github.com/agrewal/crawler/fetcher"
 	"github.com/cockroachdb/pebble"
 	flatbuffers "github.com/google/flatbuffers/go"
+	"github.com/segmentio/ksuid"
 )
 
 var builderPool = sync.Pool{
@@ -95,6 +96,7 @@ type StoringFetchable struct {
 	urlStr      string
 	store       *Store
 	minInterval time.Duration
+	id          string
 }
 
 func NewStoringFetchable(urlStr string, store *Store, minInterval time.Duration) *StoringFetchable {
@@ -102,15 +104,20 @@ func NewStoringFetchable(urlStr string, store *Store, minInterval time.Duration)
 		urlStr:      urlStr,
 		store:       store,
 		minInterval: minInterval,
+		id:          ksuid.New().String(),
 	}
 }
 
-func (s *StoringFetchable) Url() string {
-	return s.urlStr
+func (s *StoringFetchable) Id() string {
+	return s.id
+}
+
+func (s *StoringFetchable) Request() (*http.Request, error) {
+	return http.NewRequest("GET", s.urlStr, nil)
 }
 
 func (s *StoringFetchable) Validate() error {
-	cu, closer, err := s.store.Get(s.Url())
+	cu, closer, err := s.store.Get(s.urlStr)
 	if err != nil && err != pebble.ErrNotFound {
 		return err
 	}
@@ -126,7 +133,7 @@ func (s *StoringFetchable) Validate() error {
 }
 
 func (s *StoringFetchable) HandleResponse(resp *http.Response) error {
-	return s.store.Save(s.Url(), resp)
+	return s.store.Save(s.urlStr, resp)
 }
 
 func ReaderToStoringFetchable(ctx context.Context, reader io.Reader, channelBufferSize int, store *Store, minInterval time.Duration) <-chan fetcher.Fetchable {

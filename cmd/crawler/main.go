@@ -40,11 +40,7 @@ func main() {
 			panic(err)
 		}
 		defer store.Close()
-		fer, err := fetcher.NewFetcher(
-			10*time.Minute,
-			15*time.Second,
-			3*time.Hour,
-		)
+		fer := fetcher.NewFetcher()
 		urlChan := crawler.ReaderToStoringFetchable(context.Background(), os.Stdin, 1, store, 1*time.Hour)
 		fer.FetchConcurrentlyWait(urlChan, *conc)
 
@@ -76,5 +72,4 @@ func main() {
 		fmt.Printf("Unknown subcommand %s\n", os.Args[1])
 		os.Exit(1)
 	}
-
 }
