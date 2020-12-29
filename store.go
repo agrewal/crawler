@@ -22,16 +22,16 @@ type Store interface {
 	Set(key string, body []byte) error
 }
 
-type StoringFetchable struct {
+type storeWrappedFetchable struct {
 	Fetchable
 	store Store
 }
 
-func NewStoringFetchable(fetchable Fetchable, store Store) *StoringFetchable {
-	return &StoringFetchable{fetchable, store}
+func NewStoreWrappedFetchable(fetchable Fetchable, store Store) *storeWrappedFetchable {
+	return &storeWrappedFetchable{fetchable, store}
 }
 
-func (sf *StoringFetchable) HandleResponseBody(body []byte) error {
+func (sf *storeWrappedFetchable) HandleResponseBody(body []byte) error {
 	builder := builderPool.Get().(*flatbuffers.Builder)
 	defer builderPool.Put(builder)
 	builder.Reset()
@@ -57,6 +57,13 @@ type StoreBackedFetcher struct {
 	minInterval time.Duration
 }
 
+type StoringFetchable interface {
+	Fetchable
+
+	// Force a fetch from the URL, instead of getting from the store
+	ForceFetch() bool
+}
+
 func NewStoreBackedFetcher(store Store, fetcher *Fetcher, minInterval time.Duration) *StoreBackedFetcher {
 	return &StoreBackedFetcher{
 		store,
@@ -65,7 +72,7 @@ func NewStoreBackedFetcher(store Store, fetcher *Fetcher, minInterval time.Durat
 	}
 }
 
-func (sbf *StoreBackedFetcher) Fetch(furl Fetchable) error {
+func (sbf *StoreBackedFetcher) Fetch(furl StoringFetchable) error {
 	log.WithField("id", furl.Id()).Debug("Getting http request")
 	req, err := furl.Request()
 	if err != nil {
@@ -76,25 +83,29 @@ func (sbf *StoreBackedFetcher) Fetch(furl Fetchable) error {
 		"id":  furl.Id(),
 		"url": u,
 	})
-	l.Debug("Fetching from the store")
-	cu, closer, err := sbf.store.Get(u)
-	if closer != nil {
-		defer closer.Close()
-	}
-	if err != nil && err != pebble.ErrNotFound {
-		return err
-	}
-	if cu != nil {
-		l.Debug("Found in storage")
-		crawlTime := time.Unix(cu.CrawlTs(), 0)
-		minTime := crawlTime.Add(sbf.minInterval)
-		if !time.Now().After(minTime) {
-			l.Debug("minInterval has not elapsed, returning crawled data from store")
-			return furl.HandleResponseBody(cu.Body())
+	if !furl.ForceFetch() {
+		l.Debug("Fetching from the store")
+		cu, closer, err := sbf.store.Get(u)
+		if closer != nil {
+			defer closer.Close()
 		}
+		if err != nil && err != pebble.ErrNotFound {
+			return err
+		}
+		if cu != nil {
+			l.Debug("Found in storage")
+			crawlTime := time.Unix(cu.CrawlTs(), 0)
+			minTime := crawlTime.Add(sbf.minInterval)
+			if !time.Now().After(minTime) {
+				l.Debug("minInterval has not elapsed, returning crawled data from store")
+				return furl.HandleResponseBody(cu.Body())
+			}
+		}
+	} else {
+		l.Debug("Skipping store because ForceFetch is set")
 	}
 	l.Debug("Calling underlying fetcher")
-	return sbf.fetcher.Fetch(NewStoringFetchable(furl, sbf.store))
+	return sbf.fetcher.Fetch(NewStoreWrappedFetchable(furl, sbf.store))
 }
 
 type PebbleStore struct {
