@@ -190,7 +190,7 @@ func (f *Fetcher) Fetch(furl Fetchable) error {
 //
 // Note: Please ensure you call `close()` on the `urlChannel`, or else this
 // method will never return
-func FetchConcurrentlyWait(f FetchI, urlChannel <-chan Fetchable, concurrency int) {
+func (f *Fetcher) FetchConcurrentlyWait(urlChannel <-chan Fetchable, concurrency int) {
 	var wg sync.WaitGroup
 	wg.Add(concurrency)
 	for i := 0; i < concurrency; i++ {

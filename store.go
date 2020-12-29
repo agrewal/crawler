@@ -108,6 +108,29 @@ func (sbf *StoreBackedFetcher) Fetch(furl StoringFetchable) error {
 	return sbf.fetcher.Fetch(NewStoreWrappedFetchable(furl, sbf.store))
 }
 
+// Starts `concurrency` goroutines to fetch content from `urlChannel` in
+// parallel. The goroutines end when the `urlChannel` is closed. This method
+// waits until all the launched goroutines are complete.
+//
+// Note: Please ensure you call `close()` on the `urlChannel`, or else this
+// method will never return
+func (sbf *StoreBackedFetcher) FetchConcurrentlyWait(urlChannel <-chan StoringFetchable, concurrency int) {
+	var wg sync.WaitGroup
+	wg.Add(concurrency)
+	for i := 0; i < concurrency; i++ {
+		go func() {
+			defer wg.Done()
+			for u := range urlChannel {
+				err := sbf.Fetch(u)
+				if err != nil {
+					log.WithField("id", u.Id()).WithError(err).Error("Did not fetch")
+				}
+			}
+		}()
+	}
+	wg.Wait()
+}
+
 type PebbleStore struct {
 	db *pebble.DB
 }
